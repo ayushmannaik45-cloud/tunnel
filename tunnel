@@ -238,8 +238,9 @@ authenticate(){
 # ══════════════════════════════════════════════════════════════════════════
 check_deps(){
   local missing=()
-  command -v ssh    &>/dev/null || missing+=("openssh-client")
-  command -v socat  &>/dev/null || missing+=("socat")
+  command -v ssh     &>/dev/null || missing+=("openssh-client")
+  command -v socat   &>/dev/null || missing+=("socat")
+  command -v sshpass &>/dev/null || missing+=("sshpass")
   if [ ${#missing[@]} -gt 0 ]; then
     echo -e "  ${RED}${BOLD}✗ Missing dependencies:${RST} ${BOLD}${missing[*]}${RST}"
     echo
@@ -286,13 +287,10 @@ start_tcp(){
     return 0
   fi
 
-  setup_key
-
   # Auto-reconnect wrapper runs in background
   (
     while true; do
-      ssh -i "$KEY_FILE" \
-          -o StrictHostKeyChecking=no \
+      ssh -o StrictHostKeyChecking=no \
           -o UserKnownHostsFile=/dev/null \
           -o ExitOnForwardFailure=yes \
           -o ServerAliveInterval=20 \
@@ -328,7 +326,7 @@ start_tcp(){
 }
 
 # ══════════════════════════════════════════════════════════════════════════
-#  SINGLE PORT — UDP TUNNEL  (socat UDP→TCP→UDP via SSH)
+#  SINGLE PORT — UDP TUNNEL  (socat UDP→TCP→UDP via SSH with password auth)
 #
 #  Architecture:
 #    local socat  : UDP:0.0.0.0:<port>  ←→  TCP:localhost:<relay_port>
@@ -350,13 +348,10 @@ start_udp(){
     return 0
   fi
 
-  setup_key
-
   # 1) SSH TCP tunnel for the relay channel
   (
     while true; do
-      ssh -i "$KEY_FILE" \
-          -o StrictHostKeyChecking=no \
+      sshpass -e ssh -o StrictHostKeyChecking=no \
           -o UserKnownHostsFile=/dev/null \
           -o ExitOnForwardFailure=yes \
           -o ServerAliveInterval=20 \
@@ -414,6 +409,23 @@ cmd_add(){
 
   local total=$(( END_PORT - START_PORT + 1 ))
   local ok=0 fail=0
+
+  # Prompt for VPS password once at the beginning
+  echo -e "  ${NEON_BLUE}${BOLD}╔═══════════════════════════════════════════════════════════════════════╗${RST}"
+  echo -e "  ${NEON_BLUE}${BOLD}║${RST}                    ${FIRE_2}${BOLD}VPS AUTHENTICATION${RST}                         ${NEON_BLUE}${BOLD}║${RST}"
+  echo -e "  ${NEON_BLUE}${BOLD}╚═══════════════════════════════════════════════════════════════════════╝${RST}"
+  echo
+  echo -e "  ${WHT}Server: ${NEON_GREEN}${BOLD}$SERVER${RST}"
+  echo -e "  ${WHT}User:   ${NEON_GREEN}${BOLD}$USER${RST}"
+  echo
+  echo -e "  ${NEON_PINK}${BOLD}Enter VPS Password:${RST}"
+  printf "  ${NEON_PINK}${BOLD}►${RST} "
+  read -s VPS_PASSWORD
+  echo
+  echo
+  
+  # Export password for sshpass
+  export SSHPASS="$VPS_PASSWORD"
 
   if [ "$total" -eq 1 ]; then
     # ── Single port ──────────────────────────────────────────────────────
@@ -480,6 +492,10 @@ cmd_add(){
     echo   # newline after progress bar
     echo
   fi
+
+  # Clear password from environment
+  unset SSHPASS
+  unset VPS_PASSWORD
 
   fancy_hr
   echo
