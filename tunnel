@@ -18,7 +18,7 @@ SSH_PORT=22
 SECRET_HASH="5d7235a0c4aff6c5c9b369a5e03636557d03291f4646c9c2120274590b955cd2"
 
 # ── Paths ──────────────────────────────────────────────────────────────────
-CONFIG_DIR="$HOME/.astranode-tunnel"
+CONFIG_DIR="$HOME/.ayush-tunnel"
 KEY_FILE="$CONFIG_DIR/.key"
 LOG_DIR="$CONFIG_DIR/logs"
 PID_DIR="$CONFIG_DIR/pids"
@@ -288,22 +288,25 @@ start_tcp(){
 
   echo -e "  ${NEON_PINK}${BOLD}[TCP Port $port]${RST} ${WHT}Enter VPS password:${RST}"
   
-  # Start SSH tunnel - redirect stderr to log but keep stdin/stdout for password
+  # Start SSH tunnel with password authentication priority
   ssh -o StrictHostKeyChecking=no \
       -o UserKnownHostsFile=/dev/null \
+      -o PreferredAuthentications=password \
+      -o PubkeyAuthentication=no \
       -o ServerAliveInterval=60 \
       -o ServerAliveCountMax=3 \
       -o ConnectTimeout=30 \
-      -o LogLevel=ERROR \
+      -o LogLevel=VERBOSE \
       -N -f \
       -R "0:localhost:$port" \
       "$USER@$SERVER" -p "$SSH_PORT" \
-      2>> "$log_file"
+      >> "$log_file" 2>&1
 
   local exit_code=$?
   
   if [ $exit_code -ne 0 ]; then
     echo -e "  ${RED}${BOLD}✗${RST} SSH connection failed (exit code: $exit_code)"
+    echo -e "  ${YEL}${BOLD}Debug:${RST} Check log with: ${WHT}cat $log_file${RST}"
     return 1
   fi
 
@@ -320,14 +323,14 @@ start_tcp(){
 
   # Get remote port from SSH debug output
   sleep 1
-  local remote_port=$(ss -tnlp 2>/dev/null | grep "$ssh_pid" | grep -oE ':[0-9]+' | grep -oE '[0-9]+' | head -1)
+  local remote_port=$(grep -oE 'Allocated port [0-9]+' "$log_file" 2>/dev/null | grep -oE '[0-9]+' | head -1)
   
-  # If ss doesn't work, try netstat
+  # Fallback: try to detect from process
   if [ -z "$remote_port" ]; then
-    remote_port=$(netstat -tnlp 2>/dev/null | grep "$ssh_pid" | grep -oE ':[0-9]+' | grep -oE '[0-9]+' | head -1)
+    remote_port=$(ss -tnlp 2>/dev/null | grep "$ssh_pid" | grep -oE ':[0-9]+' | grep -oE '[0-9]+' | head -1)
   fi
   
-  # Fallback: generate a pseudo-random port for display
+  # If still not found, use a placeholder
   if [ -z "$remote_port" ]; then
     remote_port=$((10000 + RANDOM % 55535))
   fi
@@ -364,6 +367,8 @@ start_udp(){
   # 1) SSH TCP tunnel for the relay channel
   ssh -o StrictHostKeyChecking=no \
       -o UserKnownHostsFile=/dev/null \
+      -o PreferredAuthentications=password \
+      -o PubkeyAuthentication=no \
       -o ServerAliveInterval=60 \
       -o ServerAliveCountMax=3 \
       -o ConnectTimeout=30 \
