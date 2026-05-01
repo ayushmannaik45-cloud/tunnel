@@ -238,9 +238,8 @@ authenticate(){
 # ══════════════════════════════════════════════════════════════════════════
 check_deps(){
   local missing=()
-  command -v ssh     &>/dev/null || missing+=("openssh-client")
-  command -v socat   &>/dev/null || missing+=("socat")
-  command -v sshpass &>/dev/null || missing+=("sshpass")
+  command -v ssh   &>/dev/null || missing+=("openssh-client")
+  command -v socat &>/dev/null || missing+=("socat")
   if [ ${#missing[@]} -gt 0 ]; then
     echo -e "  ${RED}${BOLD}✗ Missing dependencies:${RST} ${BOLD}${missing[*]}${RST}"
     echo
@@ -287,29 +286,34 @@ start_tcp(){
     return 0
   fi
 
-  # Auto-reconnect wrapper runs in background
-  (
-    while true; do
-      ssh -o StrictHostKeyChecking=no \
-          -o UserKnownHostsFile=/dev/null \
-          -o ExitOnForwardFailure=yes \
-          -o ServerAliveInterval=20 \
-          -o ServerAliveCountMax=3 \
-          -o ConnectTimeout=10 \
-          -o LogLevel=VERBOSE \
-          -N \
-          -R "0:localhost:$port" \
-          "$USER@$SERVER" -p "$SSH_PORT" \
-          > "$log_file" 2>&1
-      sleep 3   # brief pause before reconnect
-    done
-  ) &
-  local wrapper_pid=$!
-  echo "$wrapper_pid" > "$pid_file"
+  # Start SSH tunnel in background (will prompt for password interactively)
+  ssh -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      -o ExitOnForwardFailure=yes \
+      -o ServerAliveInterval=60 \
+      -o ServerAliveCountMax=3 \
+      -o ConnectTimeout=30 \
+      -o LogLevel=VERBOSE \
+      -N -f \
+      -R "0:localhost:$port" \
+      "$USER@$SERVER" -p "$SSH_PORT" \
+      > "$log_file" 2>&1
 
-  # Wait up to 6 s for SSH to allocate a remote port
+  if [ $? -ne 0 ]; then
+    return 1
+  fi
+
+  sleep 2
+
+  # Get the SSH PID and remote port
+  local ssh_pid=$(pgrep -f "ssh.*-R.*:localhost:$port.*$SERVER" | head -1)
+  if [ -n "$ssh_pid" ]; then
+    echo "$ssh_pid" > "$pid_file"
+  fi
+
+  # Wait up to 10s for SSH to allocate a remote port
   local remote_port=""
-  for i in $(seq 1 30); do
+  for i in $(seq 1 50); do
     sleep 0.2
     remote_port=$(grep -oE 'Allocated port [0-9]+' "$log_file" 2>/dev/null | grep -oE '[0-9]+' | head -1)
     [ -n "$remote_port" ] && break
@@ -319,7 +323,7 @@ start_tcp(){
     echo "$remote_port" > "$map_file"
     return 0
   else
-    kill "$wrapper_pid" 2>/dev/null
+    [ -n "$ssh_pid" ] && kill "$ssh_pid" 2>/dev/null
     rm -f "$pid_file"
     return 1
   fi
@@ -348,23 +352,25 @@ start_udp(){
     return 0
   fi
 
-  # 1) SSH TCP tunnel for the relay channel
-  (
-    while true; do
-      sshpass -e ssh -o StrictHostKeyChecking=no \
-          -o UserKnownHostsFile=/dev/null \
-          -o ExitOnForwardFailure=yes \
-          -o ServerAliveInterval=20 \
-          -o ServerAliveCountMax=3 \
-          -o ConnectTimeout=10 \
-          -N \
-          -R "$relay_port:localhost:$relay_port" \
-          "$USER@$SERVER" -p "$SSH_PORT" \
-          >> "$log_file" 2>&1
-      sleep 3
-    done
-  ) &
-  local ssh_pid=$!
+  # 1) SSH TCP tunnel for the relay channel (will prompt for password)
+  ssh -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      -o ExitOnForwardFailure=yes \
+      -o ServerAliveInterval=60 \
+      -o ServerAliveCountMax=3 \
+      -o ConnectTimeout=30 \
+      -N -f \
+      -R "$relay_port:localhost:$relay_port" \
+      "$USER@$SERVER" -p "$SSH_PORT" \
+      >> "$log_file" 2>&1
+
+  if [ $? -ne 0 ]; then
+    return 1
+  fi
+
+  sleep 1
+
+  local ssh_pid=$(pgrep -f "ssh.*-R.*$relay_port:localhost:$relay_port.*$SERVER" | head -1)
 
   # 2) Local socat: UDP listener → TCP relay
   socat -T5 \
@@ -410,7 +416,6 @@ cmd_add(){
   local total=$(( END_PORT - START_PORT + 1 ))
   local ok=0 fail=0
 
-  # Prompt for VPS password once at the beginning
   echo -e "  ${NEON_BLUE}${BOLD}╔═══════════════════════════════════════════════════════════════════════╗${RST}"
   echo -e "  ${NEON_BLUE}${BOLD}║${RST}                    ${FIRE_2}${BOLD}VPS AUTHENTICATION${RST}                         ${NEON_BLUE}${BOLD}║${RST}"
   echo -e "  ${NEON_BLUE}${BOLD}╚═══════════════════════════════════════════════════════════════════════╝${RST}"
@@ -418,14 +423,10 @@ cmd_add(){
   echo -e "  ${WHT}Server: ${NEON_GREEN}${BOLD}$SERVER${RST}"
   echo -e "  ${WHT}User:   ${NEON_GREEN}${BOLD}$USER${RST}"
   echo
-  echo -e "  ${NEON_PINK}${BOLD}Enter VPS Password:${RST}"
-  printf "  ${NEON_PINK}${BOLD}►${RST} "
-  read -s VPS_PASSWORD
+  echo -e "  ${FIRE_3}${BOLD}⚠  You will be prompted for VPS password for each tunnel${RST}"
+  echo -e "  ${GRY}${DIM}   (SSH will ask interactively - enter password when prompted)${RST}"
   echo
-  echo
-  
-  # Export password for sshpass
-  export SSHPASS="$VPS_PASSWORD"
+  sleep 2
 
   if [ "$total" -eq 1 ]; then
     # ── Single port ──────────────────────────────────────────────────────
@@ -492,10 +493,6 @@ cmd_add(){
     echo   # newline after progress bar
     echo
   fi
-
-  # Clear password from environment
-  unset SSHPASS
-  unset VPS_PASSWORD
 
   fancy_hr
   echo
