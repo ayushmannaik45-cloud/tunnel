@@ -189,12 +189,12 @@ authenticate(){
   echo -e "  ${YEL}${BOLD}╚═══════════════════════════════════════════════════════════════════════╝${RST}"
   echo
   echo -e "  ${NEON_BLUE}${BOLD}Enter Access Code:${RST}"
+  echo -e "  ${GRY}${DIM}(Paste is enabled - Ctrl+Shift+V or right-click)${RST}"
   echo
   printf "  ${NEON_PINK}${BOLD}►${RST} "
   
-  # Read password without echo
-  read -s user_code
-  echo
+  # Read password without echo but allow paste
+  IFS= read -r user_code
   echo
   
   # Hash the user input and compare with stored hash
